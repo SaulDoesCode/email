@@ -297,12 +297,13 @@ func writeMessage(buff *bytes.Buffer, msg []byte, multipart bool, mediaType stri
 		}
 	}
 
-	qp := quotedprintable.NewWriter(buff)
+	// quoted printable just messess up my stuff
+	// qp := quotedprintable.NewWriter(buff)
 	// Write the text
-	if _, err := qp.Write(msg); err != nil {
+	if _, err := buff.Write(msg); err != nil {
 		return err
 	}
-	return qp.Close()
+	return nil
 }
 
 // Bytes converts the Email object to a []byte representation, including all needed MIMEHeaders, boundaries, etc.
