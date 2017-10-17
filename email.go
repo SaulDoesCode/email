@@ -15,7 +15,7 @@ import (
 	"math/big"
 	"mime"
 	"mime/multipart"
-	"mime/quotedprintable"
+	// "mime/quotedprintable"
 	"net/mail"
 	"net/smtp"
 	"net/textproto"
