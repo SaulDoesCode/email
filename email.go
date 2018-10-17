@@ -15,7 +15,7 @@ import (
 	"math/big"
 	"mime"
 	"mime/multipart"
-	// "mime/quotedprintable"
+	"mime/quotedprintable"
 	"net/mail"
 	"net/smtp"
 	"net/textproto"
@@ -39,6 +39,7 @@ var ErrMissingContentType = errors.New("No Content-Type found for MIME entity")
 
 // Email is the type used for email messages
 type Email struct {
+	ReplyTo     []string
 	From        string
 	To          []string
 	Bcc         []string
@@ -174,9 +175,15 @@ func parseMIMEParts(hs textproto.MIMEHeader, b io.Reader) ([]*part, error) {
 				}
 				ps = append(ps, sps...)
 			} else {
+				var reader io.Reader
+				reader = p
+				const cte = "Content-Transfer-Encoding"
+				if p.Header.Get(cte) == "base64" {
+					reader = base64.NewDecoder(base64.StdEncoding, reader)
+				}
 				// Otherwise, just append the part to the list
 				// Copy the part data into the buffer
-				if _, err := io.Copy(&buf, p); err != nil {
+				if _, err := io.Copy(&buf, reader); err != nil {
 					return ps, err
 				}
 				ps = append(ps, &part{body: buf.Bytes(), header: p.Header})
@@ -245,13 +252,16 @@ func (e *Email) AttachFile(filename string) (a *Attachment, err error) {
 func (e *Email) msgHeaders() (textproto.MIMEHeader, error) {
 	res := make(textproto.MIMEHeader, len(e.Headers)+4)
 	if e.Headers != nil {
-		for _, h := range []string{"To", "Cc", "From", "Subject", "Date", "Message-Id", "MIME-Version"} {
+		for _, h := range []string{"Reply-To", "To", "Cc", "From", "Subject", "Date", "Message-Id", "MIME-Version"} {
 			if v, ok := e.Headers[h]; ok {
 				res[h] = v
 			}
 		}
 	}
 	// Set headers if there are values.
+	if _, ok := res["Reply-To"]; !ok && len(e.ReplyTo) > 0 {
+		res.Set("Reply-To", strings.Join(e.ReplyTo, ", "))
+	}
 	if _, ok := res["To"]; !ok && len(e.To) > 0 {
 		res.Set("To", strings.Join(e.To, ", "))
 	}
@@ -297,13 +307,12 @@ func writeMessage(buff *bytes.Buffer, msg []byte, multipart bool, mediaType stri
 		}
 	}
 
-	// quoted printable just messess up my stuff
-	// qp := quotedprintable.NewWriter(buff)
+	qp := quotedprintable.NewWriter(buff)
 	// Write the text
-	if _, err := buff.Write(msg); err != nil {
+	if _, err := qp.Write(msg); err != nil {
 		return err
 	}
-	return nil
+	return qp.Close()
 }
 
 // Bytes converts the Email object to a []byte representation, including all needed MIMEHeaders, boundaries, etc.
@@ -332,8 +341,10 @@ func (e *Email) Bytes() ([]byte, error) {
 		headers.Set("Content-Type", "multipart/alternative;\r\n boundary="+w.Boundary())
 	case len(e.HTML) > 0:
 		headers.Set("Content-Type", "text/html; charset=UTF-8")
+		headers.Set("Content-Transfer-Encoding", "quoted-printable")
 	default:
 		headers.Set("Content-Type", "text/plain; charset=UTF-8")
+		headers.Set("Content-Transfer-Encoding", "quoted-printable")
 	}
 	headerToBytes(buff, headers)
 	io.WriteString(buff, "\r\n")
@@ -461,9 +472,13 @@ func (e *Email) SendWithTLS(addr string, a smtp.Auth, t *tls.Config) error {
 	if err != nil {
 		return err
 	}
-	// Taken from the standard library
-	// https://github.com/golang/go/blob/master/src/net/smtp/smtp.go#L300
-	c, err := smtp.Dial(addr)
+
+	conn, err := tls.Dial("tcp", addr, t)
+	if err != nil {
+		return err
+	}
+
+	c, err := smtp.NewClient(conn, t.ServerName)
 	if err != nil {
 		return err
 	}
